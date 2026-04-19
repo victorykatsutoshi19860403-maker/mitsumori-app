@@ -896,6 +896,19 @@ function calcBreakdown(){
   if(isNaN(d.getTime())) return null;
   const y = d.getFullYear(), mo = d.getMonth(), dd = d.getDate();
   const lastDay = new Date(y, mo + 1, 0).getDate();
+
+  // 1日入居: 当月分のみ (日割り・翌月分なし)
+  if(dd === 1){
+    return {
+      rows: [
+        {name: `家賃（${mo+1}月分）`,   amount: r},
+        {name: `管理費（${mo+1}月分）`, amount: m},
+      ],
+      dateLabel: `${y}年${mo+1}月${dd}日`,
+    };
+  }
+
+  // 2日以降: 日割り + 翌月分
   const days = lastDay - dd + 1;
   const nm = (mo === 11) ? 0 : mo + 1;
   const proRent = Math.round(r * days / lastDay);
