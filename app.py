@@ -675,16 +675,28 @@ const up = $("#upload"), ed = $("#edit");
 let selectedFile = null;
 
 /* --- Drag & Drop --- */
-["dragenter","dragover"].forEach(e => drop.addEventListener(e, ev => {
-  ev.preventDefault(); drop.classList.add("on");
+/* ブラウザが PDF を開いてしまうのを防ぐ (ドロップゾーン外に落ちた場合の保険) */
+["dragenter","dragover","dragleave","drop"].forEach(e =>
+  window.addEventListener(e, ev => ev.preventDefault(), false)
+);
+document.addEventListener("dragover", ev => ev.preventDefault(), false);
+document.addEventListener("drop", ev => ev.preventDefault(), false);
+
+/* ウィンドウ全体どこにドロップしても受け取る */
+["dragenter","dragover"].forEach(e => window.addEventListener(e, ev => {
+  if(ev.dataTransfer && Array.from(ev.dataTransfer.types||[]).includes("Files")){
+    drop.classList.add("on");
+  }
 }));
-["dragleave","drop"].forEach(e => drop.addEventListener(e, ev => {
-  ev.preventDefault(); drop.classList.remove("on");
+["dragleave"].forEach(e => window.addEventListener(e, ev => {
+  // ウィンドウ外に出たときだけハイライト解除
+  if(ev.clientX === 0 && ev.clientY === 0) drop.classList.remove("on");
 }));
-drop.addEventListener("drop", ev => {
-  const f = ev.dataTransfer.files?.[0];
+window.addEventListener("drop", ev => {
+  drop.classList.remove("on");
+  const f = ev.dataTransfer?.files?.[0];
   if(f) setFile(f);
-});
+}, false);
 fileIn.addEventListener("change", e => {
   const f = e.target.files?.[0];
   if(f) setFile(f);
