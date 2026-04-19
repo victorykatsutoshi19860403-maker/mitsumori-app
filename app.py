@@ -1423,7 +1423,12 @@ function hideErr(el){ el.style.display = "none"; }
 
 @app.route("/")
 def index():
-    return render_template_string(INDEX_HTML, year=datetime.now().year)
+    # 常に最新版の HTML/JS を取得させる (更新後のキャッシュ問題対策)
+    resp = app.make_response(render_template_string(INDEX_HTML, year=datetime.now().year))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/healthz")
