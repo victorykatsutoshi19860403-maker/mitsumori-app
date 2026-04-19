@@ -25,6 +25,7 @@ from reportlab.lib.units import mm
 from reportlab.lib.colors import HexColor
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +225,27 @@ def _amount_to_int(v) -> int:
 # ---------------------------------------------------------------------------
 # PDF 生成
 # ---------------------------------------------------------------------------
+def _wrap_text(text: str, font_name: str, font_size: float, max_width: float):
+    """PDF 内のテキストを max_width 以内で改行する (日本語も1文字ずつ計測)"""
+    out = []
+    for para in (text or "").split("\n"):
+        if not para:
+            out.append("")
+            continue
+        cur = ""
+        for ch in para:
+            test = cur + ch
+            if stringWidth(test, font_name, font_size) > max_width:
+                if cur:
+                    out.append(cur)
+                cur = ch
+            else:
+                cur = test
+        if cur:
+            out.append(cur)
+    return out
+
+
 def _fmt_yen(v) -> str:
     """金額表示: 数値なら ¥X,XXX、文字列なら『別途』等をそのまま返す"""
     if isinstance(v, (int, float)):
@@ -417,6 +439,53 @@ def generate_estimate_pdf(data: dict) -> bytes:
     c.setFont(FONT_MINCHO, 16)
     c.drawRightString(W - 26 * mm, total_top - total_h + 4 * mm, _fmt_yen(total))
 
+    # ---- 備考 ----
+    notes = (data.get("notes") or "").strip()
+    if notes:
+        notes_title_y = total_top - total_h - 8 * mm
+        footer_reserved_y = 25 * mm  # フッター上辺の目安
+        available_h = notes_title_y - footer_reserved_y - 4 * mm
+
+        if available_h >= 10 * mm:
+            # ラベル
+            c.setFillColor(COLOR_NAVY)
+            c.setFont(FONT_GOTHIC, 9)
+            c.drawString(20 * mm, notes_title_y, "■ 備　考")
+            # ゴールド帯 (ラベル下)
+            c.setFillColor(COLOR_GOLD)
+            c.rect(20 * mm, notes_title_y - 1.8 * mm, 18 * mm, 0.4 * mm, stroke=0, fill=1)
+
+            box_top    = notes_title_y - 4 * mm
+            box_bottom = footer_reserved_y
+            # 枠
+            c.setStrokeColor(COLOR_GRAY_LIGHT)
+            c.setLineWidth(0.5)
+            c.rect(20 * mm, box_bottom, W - 40 * mm, box_top - box_bottom,
+                   stroke=1, fill=0)
+            # 左のゴールド縦帯 (デザインアクセント)
+            c.setFillColor(COLOR_GOLD)
+            c.rect(20 * mm, box_bottom, 0.8 * mm, box_top - box_bottom,
+                   stroke=0, fill=1)
+
+            # テキスト: 自動改行
+            text_font = FONT_MINCHO
+            text_size = 10.0
+            line_h    = 4.8 * mm
+            max_w     = W - 52 * mm  # 左右の padding 考慮
+            wrapped = _wrap_text(notes, text_font, text_size, max_w)
+
+            c.setFillColor(COLOR_GRAY_DARK)
+            c.setFont(text_font, text_size)
+            y = box_top - 5 * mm
+            for line in wrapped:
+                if y < box_bottom + 3 * mm:
+                    # 収まらなければ省略
+                    c.setFillColor(HexColor("#888888"))
+                    c.drawRightString(W - 24 * mm, box_bottom + 2 * mm, "…以下省略")
+                    break
+                c.drawString(25 * mm, y, line)
+                y -= line_h
+
     # ---- フッター ----
     fy = 18 * mm
     c.setFillColor(COLOR_GOLD)
@@ -600,6 +669,17 @@ INDEX_HTML = r"""<!doctype html>
     transition:.2s;
   }
   .field input:focus{background:#fff;border-bottom-color:var(--gold)}
+  .field textarea{
+    width:100%;
+    padding:12px 14px;
+    border:1px solid var(--line);
+    border-bottom:2px solid var(--navy);
+    background:#fcfbf7;
+    font-size:13px;font-family:inherit;line-height:1.7;
+    border-radius:1px;outline:none;resize:vertical;
+    transition:.2s;
+  }
+  .field textarea:focus{background:#fff;border-bottom-color:var(--gold)}
   .hint{font-size:11px;color:#888;line-height:1.5;padding-top:8px}
 
   /* --- 家賃・管理費 ブロック --- */
@@ -868,6 +948,16 @@ INDEX_HTML = r"""<!doctype html>
 
     <button type="button" class="add-row" id="btn-add">＋ 項目を追加</button>
 
+    <!-- 備考 -->
+    <div class="subhead" style="margin-top:28px">
+      <div class="section-label">REMARKS</div>
+      <h3>備　考</h3>
+      <div class="hint" style="padding-top:0">自由記入欄。ここに書いた内容は見積書PDFの末尾にそのまま印字されます（改行も反映）</div>
+    </div>
+    <div class="field" style="margin-top:10px">
+      <textarea id="f-notes" rows="4" placeholder="例:&#10;・更新料なし&#10;・保証会社必須（初回 家賃1ヶ月分、月額 2,200円）&#10;・駐車場別途 月額15,000円（2台まで可）&#10;・退去時の室内クリーニング費 45,000円（税別）を別途申し受けます"></textarea>
+    </div>
+
     <div class="total-box">
       <div class="lbl">合計金額 (税込)</div>
       <div class="val" id="total-display">¥0</div>
@@ -1002,12 +1092,13 @@ function initProperties(arr){
       monthly_rent: sp.mr,
       monthly_mgmt: sp.mm,
       other_items: sp.others,
+      notes: "",
     };
   });
   if(properties.length === 0){
     properties.push({
       property_name:"", address:"", occupancy_date:defaultOccDate(),
-      monthly_rent:0, monthly_mgmt:0, other_items:[],
+      monthly_rent:0, monthly_mgmt:0, other_items:[], notes:"",
     });
   }
   currentIdx = 0;
@@ -1034,6 +1125,7 @@ function saveCurrentForm(){
       p.other_items.push({name:n, amount: pa.text !== null ? pa.text : pa.num});
     }
   });
+  p.notes = $("#f-notes").value;
 }
 
 /* properties[currentIdx] をフォームに流し込む */
@@ -1048,6 +1140,8 @@ function renderCurrentProperty(){
 
   const tb = $("#tbody"); tb.innerHTML = "";
   p.other_items.forEach(it => addRow(it.name, it.amount));
+
+  $("#f-notes").value = p.notes || "";
 
   renderBreakdown();
   recalcTotal();
@@ -1246,6 +1340,7 @@ function buildPayloadFromProperty(p){
     address: p.address,
     occupancy_date: p.occupancy_date,
     items, total,
+    notes: p.notes || "",
   };
 }
 
