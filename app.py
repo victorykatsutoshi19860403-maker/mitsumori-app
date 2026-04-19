@@ -45,6 +45,9 @@ REQUIRED_ITEMS = [
 
 GEMINI_MODEL = "gemini-2.5-flash"
 
+# アプリのバージョン (キャッシュ確認用)
+APP_VERSION = "2026.04.20-a"
+
 # reportlab 内蔵の日本語 CID フォント
 pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
 pdfmetrics.registerFont(UnicodeCIDFont("HeiseiMin-W3"))
@@ -443,48 +446,49 @@ def generate_estimate_pdf(data: dict) -> bytes:
     notes = (data.get("notes") or "").strip()
     if notes:
         notes_title_y = total_top - total_h - 8 * mm
-        footer_reserved_y = 25 * mm  # フッター上辺の目安
-        available_h = notes_title_y - footer_reserved_y - 4 * mm
+        footer_reserved_y = 25 * mm
 
-        if available_h >= 10 * mm:
-            # ラベル
-            c.setFillColor(COLOR_NAVY)
-            c.setFont(FONT_GOTHIC, 9)
-            c.drawString(20 * mm, notes_title_y, "■ 備　考")
-            # ゴールド帯 (ラベル下)
-            c.setFillColor(COLOR_GOLD)
-            c.rect(20 * mm, notes_title_y - 1.8 * mm, 18 * mm, 0.4 * mm, stroke=0, fill=1)
+        # スペースが狭すぎる場合は次ページへ (無音で省略しない)
+        if notes_title_y - footer_reserved_y < 22 * mm:
+            c.showPage()
+            notes_title_y = H - 25 * mm  # 新ページの上部に配置
 
-            box_top    = notes_title_y - 4 * mm
-            box_bottom = footer_reserved_y
-            # 枠
-            c.setStrokeColor(COLOR_GRAY_LIGHT)
-            c.setLineWidth(0.5)
-            c.rect(20 * mm, box_bottom, W - 40 * mm, box_top - box_bottom,
-                   stroke=1, fill=0)
-            # 左のゴールド縦帯 (デザインアクセント)
-            c.setFillColor(COLOR_GOLD)
-            c.rect(20 * mm, box_bottom, 0.8 * mm, box_top - box_bottom,
-                   stroke=0, fill=1)
+        # ラベル
+        c.setFillColor(COLOR_NAVY)
+        c.setFont(FONT_GOTHIC, 9)
+        c.drawString(20 * mm, notes_title_y, "■ 備　考")
+        c.setFillColor(COLOR_GOLD)
+        c.rect(20 * mm, notes_title_y - 1.8 * mm, 18 * mm, 0.4 * mm, stroke=0, fill=1)
 
-            # テキスト: 自動改行
-            text_font = FONT_MINCHO
-            text_size = 10.0
-            line_h    = 4.8 * mm
-            max_w     = W - 52 * mm  # 左右の padding 考慮
-            wrapped = _wrap_text(notes, text_font, text_size, max_w)
+        box_top    = notes_title_y - 4 * mm
+        box_bottom = footer_reserved_y
+        # 枠
+        c.setStrokeColor(COLOR_GRAY_LIGHT)
+        c.setLineWidth(0.5)
+        c.rect(20 * mm, box_bottom, W - 40 * mm, box_top - box_bottom,
+               stroke=1, fill=0)
+        # 左のゴールド縦帯
+        c.setFillColor(COLOR_GOLD)
+        c.rect(20 * mm, box_bottom, 0.8 * mm, box_top - box_bottom,
+               stroke=0, fill=1)
 
-            c.setFillColor(COLOR_GRAY_DARK)
-            c.setFont(text_font, text_size)
-            y = box_top - 5 * mm
-            for line in wrapped:
-                if y < box_bottom + 3 * mm:
-                    # 収まらなければ省略
-                    c.setFillColor(HexColor("#888888"))
-                    c.drawRightString(W - 24 * mm, box_bottom + 2 * mm, "…以下省略")
-                    break
-                c.drawString(25 * mm, y, line)
-                y -= line_h
+        # テキスト (自動改行)
+        text_font = FONT_MINCHO
+        text_size = 10.0
+        line_h    = 4.8 * mm
+        max_w     = W - 52 * mm
+        wrapped = _wrap_text(notes, text_font, text_size, max_w)
+
+        c.setFillColor(COLOR_GRAY_DARK)
+        c.setFont(text_font, text_size)
+        y = box_top - 5 * mm
+        for line in wrapped:
+            if y < box_bottom + 3 * mm:
+                c.setFillColor(HexColor("#888888"))
+                c.drawRightString(W - 24 * mm, box_bottom + 2 * mm, "…以下省略")
+                break
+            c.drawString(25 * mm, y, line)
+            y -= line_h
 
     # ---- フッター ----
     fy = 18 * mm
@@ -972,7 +976,7 @@ INDEX_HTML = r"""<!doctype html>
   </section>
 </main>
 
-<footer>© N-PRIME Co., Ltd. &nbsp;·&nbsp; {{ year }}</footer>
+<footer>© N-PRIME Co., Ltd. &nbsp;·&nbsp; {{ year }} &nbsp;·&nbsp; <span style="color:#bbb;font-family:'Cormorant Garamond',serif">v{{ version }}</span></footer>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -1349,6 +1353,15 @@ $("#btn-pdf").addEventListener("click", async () => {
   saveCurrentForm();
   const p = properties[currentIdx];
   const payload = buildPayloadFromProperty(p);
+  // デバッグ: F12 コンソールで payload を確認できるように (備考 が入っているか等)
+  console.log("[mitsumori-app] PDF payload:", {
+    property_name: payload.property_name,
+    address: payload.address,
+    occupancy_date: payload.occupancy_date,
+    items_count: payload.items.length,
+    notes_length: (payload.notes || "").length,
+    notes_preview: (payload.notes || "").slice(0, 60),
+  });
   if(payload.items.length === 0){
     showErr(errEd, "少なくとも1行は項目を入力してください"); return;
   }
@@ -1424,11 +1437,23 @@ function hideErr(el){ el.style.display = "none"; }
 @app.route("/")
 def index():
     # 常に最新版の HTML/JS を取得させる (更新後のキャッシュ問題対策)
-    resp = app.make_response(render_template_string(INDEX_HTML, year=datetime.now().year))
+    resp = app.make_response(render_template_string(
+        INDEX_HTML, year=datetime.now().year, version=APP_VERSION))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
     return resp
+
+
+@app.route("/favicon.ico")
+def favicon():
+    # 404 対策: 1x1 の透明画像を返す (ブラウザコンソールのノイズを消すため)
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001010000000037"
+        "6ef9240000001049444154789c626001000000ffff03000006000557bfab"
+        "d40000000049454e44ae426082"
+    )
+    return send_file(io.BytesIO(png), mimetype="image/png")
 
 
 @app.route("/healthz")
@@ -1464,6 +1489,14 @@ def api_generate_pdf():
     data = request.get_json(silent=True) or {}
     if not data.get("items"):
         return jsonify({"error": "項目が空です"}), 400
+
+    # デバッグログ (Render の Logs で確認できる)
+    app.logger.info(
+        "generate_pdf: prop=%r items=%d notes_len=%d",
+        data.get("property_name", ""),
+        len(data.get("items", [])),
+        len((data.get("notes") or "")),
+    )
 
     try:
         pdf_bytes = generate_estimate_pdf(data)
