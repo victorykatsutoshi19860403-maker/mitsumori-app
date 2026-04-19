@@ -11,6 +11,7 @@ import io
 import json
 import base64
 import re
+import zipfile
 from datetime import datetime
 
 from flask import Flask, request, jsonify, send_file, render_template_string
@@ -74,20 +75,31 @@ def extract_items_from_pdf(pdf_bytes: bytes) -> dict:
 
     prompt = (
         "あなたは不動産マイソク（物件資料PDF）から初期費用情報を抽出する専門家です。\n"
-        "添付のPDFを読み取り、以下の形式で **JSON のみ** を出力してください。\n"
+        "添付のPDFには **1つまたは複数の物件情報** が含まれている可能性があります。\n"
+        "物件ごとに初期費用情報を抽出し、以下の形式で **JSON のみ** を出力してください。\n"
         "コードブロック記号や説明文は一切不要です。\n"
         "\n"
         "出力JSONスキーマ:\n"
         "{\n"
-        '  "property_name": "物件名 (文字列)",\n'
-        '  "address":       "所在地 (文字列)",\n'
-        '  "items": [\n'
-        '    {"name": "項目名", "amount": 金額(整数,円)}\n'
-        "  ],\n"
-        '  "total": 合計金額(整数,円)\n'
+        '  "properties": [\n'
+        "    {\n"
+        '      "property_name": "物件名 (文字列)",\n'
+        '      "address":       "所在地 (文字列)",\n'
+        '      "items": [\n'
+        '        {"name": "項目名", "amount": 金額(整数,円)}\n'
+        "      ],\n"
+        '      "total": 合計金額(整数,円)\n'
+        "    }\n"
+        "    // 物件が複数ある場合はここに物件数分のオブジェクトを追加\n"
+        "  ]\n"
         "}\n"
         "\n"
-        "items 配列には以下を必ず含めてください (PDFに記載がなければ amount=0):\n"
+        "物件の判定ルール:\n"
+        "  - 複数物件が並列に掲載されている場合は properties に物件ごとのオブジェクトを追加\n"
+        "  - 同一物件の表裏・間取り図・物件概要などページが分かれているだけの場合は 1つ にまとめる\n"
+        "  - 物件が1件の場合でも必ず properties 配列 (要素1) で返す\n"
+        "\n"
+        "各物件の items 配列には以下を必ず含めてください (PDF に記載がなければ amount=0):\n"
         "  - 家賃 / 管理費 / 敷金 / 礼金\n"
         "  - 仲介手数料 / 保証会社料 / 火災保険料 / 鍵交換費用\n"
         "さらに PDF に記載されている初期費用に関わる項目 (消毒料・事務手数料・"
@@ -122,32 +134,53 @@ def extract_items_from_pdf(pdf_bytes: bytes) -> dict:
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Gemini 出力の JSON 解析に失敗: {e}\n---\n{raw[:500]}")
 
-    # 正規化
-    data.setdefault("property_name", "")
-    data.setdefault("address", "")
-    data.setdefault("items", [])
-    data.setdefault("total", 0)
+    # 新旧フォーマット吸収: {properties:[...]} でも従来の単一物件でもOKにする
+    if isinstance(data, dict) and "properties" in data and isinstance(data["properties"], list):
+        props = data["properties"]
+    elif isinstance(data, list):
+        props = data
+    else:
+        props = [data] if isinstance(data, dict) else []
 
-    # 必須項目を items の先頭に補完 (Gemini 出力に漏れた場合)
-    existing_names = {i.get("name", "") for i in data["items"]}
-    for req in REQUIRED_ITEMS:
-        if req not in existing_names:
-            data["items"].append({"name": req, "amount": 0})
+    normalized = []
+    for p in props:
+        if not isinstance(p, dict):
+            continue
+        p.setdefault("property_name", "")
+        p.setdefault("address", "")
+        p.setdefault("items", [])
+        p.setdefault("total", 0)
 
-    # amount を整数化
-    for item in data["items"]:
+        # 必須項目を補完
+        existing = {i.get("name", "") for i in p["items"] if isinstance(i, dict)}
+        for req in REQUIRED_ITEMS:
+            if req not in existing:
+                p["items"].append({"name": req, "amount": 0})
+
+        # 整数化・文字列化
+        for item in p["items"]:
+            try:
+                item["amount"] = int(item.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                item["amount"] = 0
+            item["name"] = str(item.get("name", ""))
+
         try:
-            item["amount"] = int(item.get("amount", 0) or 0)
+            p["total"] = int(p.get("total", 0) or 0)
         except (TypeError, ValueError):
-            item["amount"] = 0
-        item["name"] = str(item.get("name", ""))
+            p["total"] = sum(i["amount"] for i in p["items"])
 
-    try:
-        data["total"] = int(data.get("total", 0) or 0)
-    except (TypeError, ValueError):
-        data["total"] = sum(i["amount"] for i in data["items"])
+        normalized.append(p)
 
-    return data
+    if not normalized:
+        # 物件が1つも認識できなかった場合のフォールバック
+        normalized.append({
+            "property_name": "", "address": "",
+            "items": [{"name": r, "amount": 0} for r in REQUIRED_ITEMS],
+            "total": 0,
+        })
+
+    return {"properties": normalized}
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +602,41 @@ INDEX_HTML = r"""<!doctype html>
     margin:0 0 8px;
   }
 
+  /* --- 物件タブ (複数物件の時のみ表示) --- */
+  .prop-tabs{
+    display:none;
+    flex-wrap:wrap;gap:4px;
+    margin-bottom:22px;padding:5px;
+    background:#f2ede0;
+    border:1px solid var(--line);
+    border-radius:2px;
+  }
+  .prop-tabs.on{display:flex}
+  .prop-tab{
+    background:transparent;border:none;
+    padding:8px 16px;cursor:pointer;
+    font-family:"Noto Serif JP",serif;font-size:13px;
+    color:#555;letter-spacing:.05em;
+    border-radius:1px;
+    transition:.15s;
+    max-width:260px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .prop-tab:hover:not(.active){background:#ebe4d2;color:var(--navy)}
+  .prop-tab.active{
+    background:var(--navy);color:var(--gold);
+    font-weight:500;
+  }
+  .prop-count{
+    display:inline-block;
+    padding:3px 10px;margin-left:10px;
+    background:var(--gold);color:var(--navy-dark);
+    font-family:"Cormorant Garamond",serif;
+    font-size:11px;letter-spacing:.2em;
+    border-radius:1px;
+    vertical-align:middle;
+  }
+
   table.items{
     width:100%;border-collapse:collapse;margin-top:8px;
     font-size:14px;
@@ -691,7 +759,10 @@ INDEX_HTML = r"""<!doctype html>
   <!-- ========== 編集 ========== -->
   <section id="edit" class="card" style="margin-top:28px">
     <div class="section-label">STEP 02</div>
-    <h2 class="section-title">抽出結果の確認・編集</h2>
+    <h2 class="section-title">抽出結果の確認・編集<span id="prop-count" class="prop-count" style="display:none"></span></h2>
+
+    <!-- 物件タブ (複数物件の場合のみ表示) -->
+    <div id="prop-tabs" class="prop-tabs"></div>
 
     <div class="meta-grid">
       <div class="field">
@@ -755,7 +826,8 @@ INDEX_HTML = r"""<!doctype html>
 
     <div class="two-btn">
       <button class="btn ghost" id="btn-back">← やり直す</button>
-      <button class="btn gold" id="btn-pdf">見積書 PDF をダウンロード  ▼</button>
+      <button class="btn" id="btn-zip" style="display:none">全物件まとめて ZIP ダウンロード ⭳</button>
+      <button class="btn gold" id="btn-pdf">この物件の見積書 PDF  ▼</button>
     </div>
     <div id="err-ed" class="err"></div>
   </section>
@@ -828,7 +900,8 @@ btnExtract.addEventListener("click", async () => {
     const data = await res.json();
     if(!res.ok){ throw new Error(data.error || "抽出に失敗しました"); }
 
-    renderEdit(data);
+    // data.properties: [{property_name, address, items, total}, ...]
+    initProperties(data.properties || []);
     up.style.display = "none";
     ed.style.display = "block";
     window.scrollTo({top:0, behavior:"smooth"});
@@ -845,35 +918,136 @@ const occEl = () => $("#f-occupancy");
 const rentEl = () => $("#f-monthly-rent");
 const mgmtEl = () => $("#f-monthly-mgmt");
 const bdEl = () => $("#breakdown");
+const tabsEl = () => $("#prop-tabs");
 
-function renderEdit(data){
-  $("#f-property").value = data.property_name || "";
-  $("#f-address").value = data.address || "";
+/* ----- 複数物件の状態管理 ----- */
+let properties = [];   // [{property_name, address, occupancy_date, monthly_rent, monthly_mgmt, other_items}]
+let currentIdx = 0;
 
-  // 入居日デフォルト: 翌月1日
-  const def = new Date();
-  def.setMonth(def.getMonth() + 1);
-  def.setDate(1);
-  occEl().value = def.toISOString().slice(0, 10);
+function defaultOccDate(){
+  const d = new Date();
+  d.setMonth(d.getMonth() + 1);
+  d.setDate(1);
+  return d.toISOString().slice(0, 10);
+}
 
-  // 家賃・管理費を分離し、その他項目のみテーブルへ
-  let rent = 0, mgmt = 0;
+function splitItems(items){
+  let mr = 0, mm = 0;
   const others = [];
-  (data.items || []).forEach(it => {
+  (items || []).forEach(it => {
     const nm = (it.name || "").trim();
-    if(nm === "家賃"){ rent = Number(it.amount) || 0; }
-    else if(nm === "管理費"){ mgmt = Number(it.amount) || 0; }
+    if(nm === "家賃"){ mr = Number(it.amount) || 0; }
+    else if(nm === "管理費"){ mm = Number(it.amount) || 0; }
     else { others.push(it); }
   });
-  rentEl().value = rent;
-  mgmtEl().value = mgmt;
+  return {mr, mm, others};
+}
+
+function initProperties(arr){
+  properties = arr.map(p => {
+    const sp = splitItems(p.items);
+    return {
+      property_name: p.property_name || "",
+      address: p.address || "",
+      occupancy_date: defaultOccDate(),
+      monthly_rent: sp.mr,
+      monthly_mgmt: sp.mm,
+      other_items: sp.others,
+    };
+  });
+  if(properties.length === 0){
+    properties.push({
+      property_name:"", address:"", occupancy_date:defaultOccDate(),
+      monthly_rent:0, monthly_mgmt:0, other_items:[],
+    });
+  }
+  currentIdx = 0;
+  renderTabs();
+  renderCurrentProperty();
+}
+
+/* 現在のフォーム内容を properties[currentIdx] に書き戻す */
+function saveCurrentForm(){
+  const p = properties[currentIdx];
+  if(!p) return;
+  p.property_name  = $("#f-property").value.trim();
+  p.address        = $("#f-address").value.trim();
+  p.occupancy_date = occEl().value;
+  p.monthly_rent   = Number(rentEl().value) || 0;
+  p.monthly_mgmt   = Number(mgmtEl().value) || 0;
+  p.other_items    = [];
+  document.querySelectorAll("#tbody tr").forEach(tr => {
+    const n = tr.querySelector(".name").value.trim();
+    const a = Number(tr.querySelector(".amount").value) || 0;
+    if(n) p.other_items.push({name:n, amount:a});
+  });
+}
+
+/* properties[currentIdx] をフォームに流し込む */
+function renderCurrentProperty(){
+  const p = properties[currentIdx];
+  if(!p) return;
+  $("#f-property").value = p.property_name;
+  $("#f-address").value  = p.address;
+  occEl().value  = p.occupancy_date;
+  rentEl().value = p.monthly_rent;
+  mgmtEl().value = p.monthly_mgmt;
 
   const tb = $("#tbody"); tb.innerHTML = "";
-  others.forEach(it => addRow(it.name, it.amount));
+  p.other_items.forEach(it => addRow(it.name, it.amount));
 
   renderBreakdown();
   recalcTotal();
 }
+
+/* タブ描画 */
+function renderTabs(){
+  const container = tabsEl();
+  const countEl = $("#prop-count");
+  const zipBtn = $("#btn-zip");
+
+  if(properties.length <= 1){
+    container.classList.remove("on");
+    container.innerHTML = "";
+    countEl.style.display = "none";
+    zipBtn.style.display = "none";
+    return;
+  }
+
+  container.classList.add("on");
+  countEl.style.display = "inline-block";
+  countEl.textContent = `${properties.length} 物件`;
+  zipBtn.style.display = "inline-flex";
+
+  container.innerHTML = properties.map((p,i) => {
+    const label = (p.property_name || `物件 ${i+1}`);
+    return `<button class="prop-tab ${i===currentIdx?'active':''}" data-idx="${i}" title="${escapeHtml(label)}">
+      ${i+1}. ${escapeHtml(label)}
+    </button>`;
+  }).join("");
+
+  container.querySelectorAll(".prop-tab").forEach(btn => {
+    btn.addEventListener("click", ev => {
+      saveCurrentForm();
+      currentIdx = Number(ev.currentTarget.dataset.idx);
+      renderTabs();
+      renderCurrentProperty();
+      window.scrollTo({top:0, behavior:"smooth"});
+    });
+  });
+}
+
+/* 物件名が編集されたら該当タブのラベルも即反映 */
+document.addEventListener("input", ev => {
+  if(ev.target && ev.target.id === "f-property" && properties.length > 1){
+    const tab = document.querySelector(`.prop-tab[data-idx="${currentIdx}"]`);
+    if(tab){
+      const label = ev.target.value || `物件 ${currentIdx+1}`;
+      tab.textContent = `${currentIdx+1}. ${label}`;
+      tab.title = label;
+    }
+  }
+});
 function addRow(name="", amount=0){
   const tr = document.createElement("tr");
   tr.innerHTML = `
@@ -965,28 +1139,46 @@ $("#btn-back").addEventListener("click", () => {
   btnExtract.disabled = false;
 });
 
-/* --- PDF 生成 --- */
-$("#btn-pdf").addEventListener("click", async () => {
+/* 1物件分のpayloadを作る (入居日・月額家賃/管理費から日割りを組み立て) */
+function buildPayloadFromProperty(p){
   const items = [];
-  // 先頭に日割り家賃・管理費の4行を入れる
-  const b = calcBreakdown();
-  if(b) b.rows.forEach(r => items.push({name:r.name, amount:r.amount}));
-  // その他項目を続ける
-  document.querySelectorAll("#tbody tr").forEach(tr => {
-    const n = tr.querySelector(".name").value.trim();
-    const a = Number(tr.querySelector(".amount").value) || 0;
-    if(n) items.push({name:n, amount:a});
-  });
-  if(items.length === 0){
-    showErr(errEd, "少なくとも1行は項目を入力してください"); return;
+  // 入居日ベースの日割り計算 (1日入居は当月のみ)
+  const d = p.occupancy_date ? new Date(p.occupancy_date + "T00:00:00") : null;
+  if(d && !isNaN(d.getTime())){
+    const y = d.getFullYear(), mo = d.getMonth(), dd = d.getDate();
+    const lastDay = new Date(y, mo+1, 0).getDate();
+    const r = Number(p.monthly_rent)||0, m = Number(p.monthly_mgmt)||0;
+    if(dd === 1){
+      items.push({name:`家賃（${mo+1}月分）`,   amount:r});
+      items.push({name:`管理費（${mo+1}月分）`, amount:m});
+    } else {
+      const days = lastDay - dd + 1;
+      const nm = (mo === 11) ? 0 : mo + 1;
+      items.push({name:`家賃（${mo+1}月${dd}日〜${mo+1}月${lastDay}日 日割り ${days}日分）`, amount:Math.round(r*days/lastDay)});
+      items.push({name:`家賃（${nm+1}月分）`, amount:r});
+      items.push({name:`管理費（${mo+1}月${dd}日〜${mo+1}月${lastDay}日 日割り ${days}日分）`, amount:Math.round(m*days/lastDay)});
+      items.push({name:`管理費（${nm+1}月分）`, amount:m});
+    }
   }
-  const total = items.reduce((s,i) => s + i.amount, 0);
-  const payload = {
-    property_name: $("#f-property").value.trim(),
-    address: $("#f-address").value.trim(),
-    occupancy_date: occEl().value,
+  // その他項目
+  (p.other_items||[]).forEach(it => items.push({name:it.name, amount:Number(it.amount)||0}));
+  const total = items.reduce((s,i) => s + (i.amount||0), 0);
+  return {
+    property_name: p.property_name,
+    address: p.address,
+    occupancy_date: p.occupancy_date,
     items, total,
   };
+}
+
+/* --- 単体 PDF 生成 (現在のタブの物件) --- */
+$("#btn-pdf").addEventListener("click", async () => {
+  saveCurrentForm();
+  const p = properties[currentIdx];
+  const payload = buildPayloadFromProperty(p);
+  if(payload.items.length === 0){
+    showErr(errEd, "少なくとも1行は項目を入力してください"); return;
+  }
 
   hideErr(errEd);
   const btn = $("#btn-pdf");
@@ -1012,7 +1204,39 @@ $("#btn-pdf").addEventListener("click", async () => {
     showErr(errEd, e.message);
   }finally{
     btn.disabled = false;
-    btn.textContent = "見積書 PDF をダウンロード  ▼";
+    btn.textContent = "この物件の見積書 PDF  ▼";
+  }
+});
+
+/* --- 全物件まとめて ZIP --- */
+$("#btn-zip").addEventListener("click", async () => {
+  saveCurrentForm();
+  const payload = { properties: properties.map(buildPayloadFromProperty) };
+  hideErr(errEd);
+  const btn = $("#btn-zip");
+  btn.disabled = true; btn.textContent = "ZIP 生成中...";
+  try{
+    const res = await fetch("/api/generate_zip", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(payload),
+    });
+    if(!res.ok){
+      const e = await res.json().catch(() => ({error:"ZIP 生成に失敗"}));
+      throw new Error(e.error || "ZIP 生成に失敗");
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "見積書一式_" + new Date().toISOString().slice(0,10) + ".zip";
+    a.click();
+    URL.revokeObjectURL(url);
+  }catch(e){
+    showErr(errEd, e.message);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = "全物件まとめて ZIP ダウンロード ⭳";
   }
 });
 
@@ -1075,6 +1299,38 @@ def api_generate_pdf():
         mimetype="application/pdf",
         as_attachment=True,
         download_name=fname,
+    )
+
+
+@app.route("/api/generate_zip", methods=["POST"])
+def api_generate_zip():
+    """複数物件の見積書 PDF を一括生成して ZIP で返す"""
+    data = request.get_json(silent=True) or {}
+    props = data.get("properties", [])
+    if not props:
+        return jsonify({"error": "物件データがありません"}), 400
+
+    buf = io.BytesIO()
+    try:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, p in enumerate(props, start=1):
+                if not p.get("items"):
+                    continue
+                pdf_bytes = generate_estimate_pdf(p)
+                name = (p.get("property_name") or f"物件{i}").strip()
+                # Windows/Mac で使えないファイル名文字を置換
+                safe = re.sub(r'[\\/*?:"<>|]', "_", name)[:80]
+                zf.writestr(f"見積書_{i:02d}_{safe}.pdf", pdf_bytes)
+    except Exception as e:
+        app.logger.exception("zip generation failed")
+        return jsonify({"error": f"ZIP 生成エラー: {e}"}), 500
+
+    zip_fname = f"見積書一式_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return send_file(
+        io.BytesIO(buf.getvalue()),
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=zip_fname,
     )
 
 
