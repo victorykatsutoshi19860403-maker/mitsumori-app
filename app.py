@@ -219,13 +219,27 @@ def generate_estimate_pdf(data: dict) -> bytes:
     c.drawString(20 * mm, gy, "下記の通りお見積り申し上げます。ご査収のほど宜しくお願い申し上げます。")
 
     # ---- 物件情報ボックス ----
+    # 入居日の整形
+    occ_raw = (data.get("occupancy_date") or "").strip()
+    occ_str = ""
+    if occ_raw:
+        try:
+            _dt = datetime.strptime(occ_raw, "%Y-%m-%d")
+            occ_str = _dt.strftime("%Y年%m月%d日")
+        except ValueError:
+            occ_str = occ_raw
+
+    # 入居日がある場合は3行 (高さ 27mm)、ない場合は2行 (20mm)
+    has_occ = bool(occ_str)
+    box_h = 27 * mm if has_occ else 20 * mm
+
     py = H - 95 * mm
     c.setFillColor(COLOR_GRAY_BG)
-    c.rect(20 * mm, py - 20 * mm, W - 40 * mm, 20 * mm, stroke=0, fill=1)
+    c.rect(20 * mm, py - box_h, W - 40 * mm, box_h, stroke=0, fill=1)
 
     # 左のゴールド帯
     c.setFillColor(COLOR_GOLD)
-    c.rect(20 * mm, py - 20 * mm, 1.2 * mm, 20 * mm, stroke=0, fill=1)
+    c.rect(20 * mm, py - box_h, 1.2 * mm, box_h, stroke=0, fill=1)
 
     c.setFont(FONT_GOTHIC, 9)
     c.setFillColor(COLOR_NAVY)
@@ -234,10 +248,13 @@ def generate_estimate_pdf(data: dict) -> bytes:
     c.setFillColor(COLOR_GRAY_DARK)
     c.drawString(26 * mm, py - 12 * mm, f"物件名  {data.get('property_name', '') or '—'}")
     c.drawString(26 * mm, py - 17.5 * mm, f"所在地  {data.get('address', '') or '—'}")
+    if has_occ:
+        c.drawString(26 * mm, py - 23 * mm, f"入居日  {occ_str}")
 
     # ---- 項目表 ----
     items = data.get("items", [])
-    table_top = H - 125 * mm
+    # 物件情報ボックスの下に 8mm 余白
+    table_top = py - box_h - 8 * mm
 
     # ヘッダー行
     c.setFillColor(COLOR_NAVY)
@@ -434,6 +451,7 @@ INDEX_HTML = r"""<!doctype html>
   }
 
   .drop{
+    display:block;
     border:1.5px dashed #bcb59f;
     border-radius:3px;
     padding:48px 24px;
@@ -441,6 +459,7 @@ INDEX_HTML = r"""<!doctype html>
     transition:.2s;
     background:#fcfbf7;
     cursor:pointer;
+    position:relative;
   }
   .drop.on{border-color:var(--gold);background:#fbf5e8}
   .drop p{margin:6px 0;color:#666}
@@ -500,6 +519,55 @@ INDEX_HTML = r"""<!doctype html>
     transition:.2s;
   }
   .field input:focus{background:#fff;border-bottom-color:var(--gold)}
+  .hint{font-size:11px;color:#888;line-height:1.5;padding-top:8px}
+
+  /* --- 家賃・管理費 ブロック --- */
+  .rent-block{
+    margin-top:18px;
+    padding:20px 22px;
+    background:#fcfbf7;
+    border-left:3px solid var(--gold);
+    border-radius:2px;
+  }
+  .rent-title{
+    font-family:"Noto Serif JP",serif;
+    font-weight:600;font-size:14px;
+    color:var(--navy);letter-spacing:.1em;
+    margin:4px 0 14px;
+  }
+  .rent-inputs{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:16px;
+    margin-bottom:14px;
+  }
+  .breakdown{
+    background:#fff;
+    border:1px solid var(--line);
+    padding:8px 14px;
+  }
+  .bd-row{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:7px 0;
+    border-bottom:1px dashed #ebe6d7;
+    font-size:13px;
+  }
+  .bd-row:last-child{border-bottom:none}
+  .bd-name{color:var(--navy);font-family:"Noto Serif JP",serif}
+  .bd-amt{font-family:"Noto Sans JP",sans-serif;color:var(--ink);font-weight:500}
+  .bd-empty{color:#999;font-size:12px;padding:10px 0;text-align:center}
+  .subhead{
+    margin-top:26px;
+    padding-bottom:6px;
+    border-bottom:1px solid var(--line);
+  }
+  .subhead .section-label{margin-bottom:2px}
+  .subhead h3{
+    font-family:"Noto Serif JP",serif;
+    font-weight:600;font-size:14px;
+    color:var(--navy);letter-spacing:.1em;
+    margin:0 0 8px;
+  }
 
   table.items{
     width:100%;border-collapse:collapse;margin-top:8px;
@@ -634,6 +702,37 @@ INDEX_HTML = r"""<!doctype html>
         <label>ADDRESS / 所在地</label>
         <input id="f-address" type="text" placeholder="所在地">
       </div>
+      <div class="field">
+        <label>MOVE-IN DATE / 入居日</label>
+        <input id="f-occupancy" type="date">
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <div class="hint">※ 入居日から月末までの日割り家賃・管理費 ＋ 翌月分を自動計算します</div>
+      </div>
+    </div>
+
+    <!-- 家賃・管理費ブロック -->
+    <div class="rent-block">
+      <div class="section-label">RENT &amp; MAINTENANCE</div>
+      <h3 class="rent-title">家賃 ・ 管理費 （入居日を基に日割り自動計算）</h3>
+      <div class="rent-inputs">
+        <div class="field">
+          <label>月額家賃 (円)</label>
+          <input id="f-monthly-rent" type="number" step="1" value="0">
+        </div>
+        <div class="field">
+          <label>月額管理費 (円)</label>
+          <input id="f-monthly-mgmt" type="number" step="1" value="0">
+        </div>
+      </div>
+      <div class="breakdown" id="breakdown"></div>
+    </div>
+
+    <!-- その他項目 -->
+    <div class="subhead">
+      <div class="section-label">OTHER COSTS</div>
+      <h3>その他 初期費用項目</h3>
     </div>
 
     <table class="items">
@@ -675,28 +774,29 @@ const up = $("#upload"), ed = $("#edit");
 let selectedFile = null;
 
 /* --- Drag & Drop --- */
-/* ブラウザが PDF を開いてしまうのを防ぐ (ドロップゾーン外に落ちた場合の保険) */
-["dragenter","dragover","dragleave","drop"].forEach(e =>
-  window.addEventListener(e, ev => ev.preventDefault(), false)
+/* ページ全体で既定動作 (ブラウザがPDFを開く) をブロック */
+["dragover","drop"].forEach(e =>
+  document.addEventListener(e, ev => ev.preventDefault(), false)
 );
-document.addEventListener("dragover", ev => ev.preventDefault(), false);
-document.addEventListener("drop", ev => ev.preventDefault(), false);
 
-/* ウィンドウ全体どこにドロップしても受け取る */
-["dragenter","dragover"].forEach(e => window.addEventListener(e, ev => {
-  if(ev.dataTransfer && Array.from(ev.dataTransfer.types||[]).includes("Files")){
-    drop.classList.add("on");
-  }
+/* ドロップはドロップゾーン内のみ受け付ける */
+["dragenter","dragover"].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault();
+  ev.stopPropagation();
+  drop.classList.add("on");
 }));
-["dragleave"].forEach(e => window.addEventListener(e, ev => {
-  // ウィンドウ外に出たときだけハイライト解除
-  if(ev.clientX === 0 && ev.clientY === 0) drop.classList.remove("on");
-}));
-window.addEventListener("drop", ev => {
+drop.addEventListener("dragleave", ev => {
+  ev.preventDefault();
+  ev.stopPropagation();
+  drop.classList.remove("on");
+});
+drop.addEventListener("drop", ev => {
+  ev.preventDefault();
+  ev.stopPropagation();
   drop.classList.remove("on");
   const f = ev.dataTransfer?.files?.[0];
   if(f) setFile(f);
-}, false);
+});
 fileIn.addEventListener("change", e => {
   const f = e.target.files?.[0];
   if(f) setFile(f);
@@ -741,11 +841,37 @@ btnExtract.addEventListener("click", async () => {
 });
 
 /* --- 編集画面レンダリング --- */
+const occEl = () => $("#f-occupancy");
+const rentEl = () => $("#f-monthly-rent");
+const mgmtEl = () => $("#f-monthly-mgmt");
+const bdEl = () => $("#breakdown");
+
 function renderEdit(data){
   $("#f-property").value = data.property_name || "";
   $("#f-address").value = data.address || "";
+
+  // 入居日デフォルト: 翌月1日
+  const def = new Date();
+  def.setMonth(def.getMonth() + 1);
+  def.setDate(1);
+  occEl().value = def.toISOString().slice(0, 10);
+
+  // 家賃・管理費を分離し、その他項目のみテーブルへ
+  let rent = 0, mgmt = 0;
+  const others = [];
+  (data.items || []).forEach(it => {
+    const nm = (it.name || "").trim();
+    if(nm === "家賃"){ rent = Number(it.amount) || 0; }
+    else if(nm === "管理費"){ mgmt = Number(it.amount) || 0; }
+    else { others.push(it); }
+  });
+  rentEl().value = rent;
+  mgmtEl().value = mgmt;
+
   const tb = $("#tbody"); tb.innerHTML = "";
-  (data.items || []).forEach(it => addRow(it.name, it.amount));
+  others.forEach(it => addRow(it.name, it.amount));
+
+  renderBreakdown();
   recalcTotal();
 }
 function addRow(name="", amount=0){
@@ -759,13 +885,61 @@ function addRow(name="", amount=0){
   tr.querySelector(".del-btn").addEventListener("click", () => { tr.remove(); recalcTotal(); });
   $("#tbody").appendChild(tr);
 }
+
+/* --- 日割り計算 --- */
+function calcBreakdown(){
+  const ds = occEl().value;
+  const r  = Number(rentEl().value) || 0;
+  const m  = Number(mgmtEl().value) || 0;
+  if(!ds) return null;
+  const d = new Date(ds + "T00:00:00");
+  if(isNaN(d.getTime())) return null;
+  const y = d.getFullYear(), mo = d.getMonth(), dd = d.getDate();
+  const lastDay = new Date(y, mo + 1, 0).getDate();
+  const days = lastDay - dd + 1;
+  const nm = (mo === 11) ? 0 : mo + 1;
+  const proRent = Math.round(r * days / lastDay);
+  const proMgmt = Math.round(m * days / lastDay);
+  return {
+    rows: [
+      {name: `家賃（${mo+1}月${dd}日〜${mo+1}月${lastDay}日 日割り ${days}日分）`, amount: proRent},
+      {name: `家賃（${nm+1}月分）`, amount: r},
+      {name: `管理費（${mo+1}月${dd}日〜${mo+1}月${lastDay}日 日割り ${days}日分）`, amount: proMgmt},
+      {name: `管理費（${nm+1}月分）`, amount: m},
+    ],
+    dateLabel: `${y}年${mo+1}月${dd}日`,
+  };
+}
+function renderBreakdown(){
+  const b = calcBreakdown();
+  if(!b){
+    bdEl().innerHTML = '<div class="bd-empty">入居日を入力すると日割り計算結果がここに表示されます</div>';
+    return;
+  }
+  bdEl().innerHTML = b.rows.map(r => `
+    <div class="bd-row">
+      <div class="bd-name">${escapeHtml(r.name)}</div>
+      <div class="bd-amt">¥${(r.amount||0).toLocaleString()}</div>
+    </div>`).join("");
+}
+
 function recalcTotal(){
   let sum = 0;
+  const b = calcBreakdown();
+  if(b) b.rows.forEach(r => sum += (r.amount || 0));
   document.querySelectorAll("#tbody input.amount").forEach(i => {
     sum += Number(i.value) || 0;
   });
   $("#total-display").textContent = "¥" + sum.toLocaleString();
 }
+
+/* 入居日・月額家賃・月額管理費の変更監視 */
+document.addEventListener("input", ev => {
+  if(ev.target.matches("#f-occupancy,#f-monthly-rent,#f-monthly-mgmt")){
+    renderBreakdown();
+    recalcTotal();
+  }
+});
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c =>
     ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -781,6 +955,10 @@ $("#btn-back").addEventListener("click", () => {
 /* --- PDF 生成 --- */
 $("#btn-pdf").addEventListener("click", async () => {
   const items = [];
+  // 先頭に日割り家賃・管理費の4行を入れる
+  const b = calcBreakdown();
+  if(b) b.rows.forEach(r => items.push({name:r.name, amount:r.amount}));
+  // その他項目を続ける
   document.querySelectorAll("#tbody tr").forEach(tr => {
     const n = tr.querySelector(".name").value.trim();
     const a = Number(tr.querySelector(".amount").value) || 0;
@@ -793,6 +971,7 @@ $("#btn-pdf").addEventListener("click", async () => {
   const payload = {
     property_name: $("#f-property").value.trim(),
     address: $("#f-address").value.trim(),
+    occupancy_date: occEl().value,
     items, total,
   };
 
