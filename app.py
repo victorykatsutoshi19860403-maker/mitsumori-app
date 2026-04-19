@@ -107,6 +107,8 @@ def extract_items_from_pdf(pdf_bytes: bytes) -> dict:
         "\n"
         "ルール:\n"
         "  - 金額は整数 (円単位)。『85,000円』→ 85000、『家賃1ヶ月分』等で金額不明なら 0\n"
+        "  - PDFで『別途』『応相談』『要相談』『未定』等と書かれていれば amount はその文字列をそのまま返す\n"
+        "    (例: {\"name\": \"仲介手数料\", \"amount\": \"別途\"})\n"
         "  - 見つからない情報は空文字 \"\" を返す\n"
         "  - JSON 以外のテキスト (説明・前置き・コードフェンス) を絶対に出力しない\n"
     )
@@ -157,18 +159,16 @@ def extract_items_from_pdf(pdf_bytes: bytes) -> dict:
             if req not in existing:
                 p["items"].append({"name": req, "amount": 0})
 
-        # 整数化・文字列化
+        # 金額は整数 OR 文字列 ("別途" 等) を許容
         for item in p["items"]:
-            try:
-                item["amount"] = int(item.get("amount", 0) or 0)
-            except (TypeError, ValueError):
-                item["amount"] = 0
             item["name"] = str(item.get("name", ""))
+            raw = item.get("amount", 0)
+            item["amount"] = _coerce_amount(raw)
 
         try:
             p["total"] = int(p.get("total", 0) or 0)
         except (TypeError, ValueError):
-            p["total"] = sum(i["amount"] for i in p["items"])
+            p["total"] = sum(_amount_to_int(i["amount"]) for i in p["items"])
 
         normalized.append(p)
 
@@ -184,13 +184,62 @@ def extract_items_from_pdf(pdf_bytes: bytes) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 金額の正規化 (int または "別途" 等の文字列を許容)
+# ---------------------------------------------------------------------------
+def _coerce_amount(raw):
+    """raw が数値化できれば int を返し、『別途』等の文字列なら str のまま返す"""
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, (int, float)):
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return 0
+        # カンマ・¥・円・空白を除去して数値化を試みる
+        cleaned = re.sub(r"[,¥￥円\s]", "", s)
+        try:
+            return int(float(cleaned))
+        except ValueError:
+            # 『別途』『応相談』などはそのまま返す
+            return s
+    return 0
+
+
+def _amount_to_int(v) -> int:
+    """合計計算用: 数値にできる場合のみ int、不可なら 0"""
+    if isinstance(v, (int, float)):
+        return int(v)
+    if isinstance(v, str):
+        try:
+            return int(float(re.sub(r"[,¥￥円\s]", "", v)))
+        except ValueError:
+            return 0
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # PDF 生成
 # ---------------------------------------------------------------------------
-def _fmt_yen(n: int) -> str:
-    try:
-        return f"¥{int(n):,}"
-    except (TypeError, ValueError):
-        return "¥0"
+def _fmt_yen(v) -> str:
+    """金額表示: 数値なら ¥X,XXX、文字列なら『別途』等をそのまま返す"""
+    if isinstance(v, (int, float)):
+        try:
+            return f"¥{int(v):,}"
+        except (TypeError, ValueError):
+            return "¥0"
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return "¥0"
+        try:
+            return f"¥{int(float(re.sub(r'[,¥￥円\s]', '', s))):,}"
+        except ValueError:
+            return s  # 別途・応相談 等はそのまま
+    return "¥0"
 
 
 def generate_estimate_pdf(data: dict) -> bytes:
@@ -304,7 +353,8 @@ def generate_estimate_pdf(data: dict) -> bytes:
 
     for idx, it in enumerate(items):
         name = it.get("name", "")
-        amount = int(it.get("amount", 0) or 0)
+        raw_amount = it.get("amount", 0)
+        amount = _amount_to_int(raw_amount)  # 合計計算用 (別途 等は 0)
         computed_total += amount
 
         y_cur -= row_h
@@ -336,7 +386,8 @@ def generate_estimate_pdf(data: dict) -> bytes:
         c.setFont(FONT_MINCHO, 10.5)
         c.drawString(26 * mm, y_cur + 2.5 * mm, name)
         c.setFont(FONT_GOTHIC, 10.5)
-        c.drawRightString(W - 26 * mm, y_cur + 2.5 * mm, _fmt_yen(amount))
+        # 数値なら ¥X,XXX、『別途』等の文字列ならそのまま印字
+        c.drawRightString(W - 26 * mm, y_cur + 2.5 * mm, _fmt_yen(raw_amount))
 
     # 表外枠 (ネイビー)
     c.setStrokeColor(COLOR_NAVY)
@@ -344,11 +395,8 @@ def generate_estimate_pdf(data: dict) -> bytes:
     c.rect(20 * mm, y_cur, W - 40 * mm, (table_top - y_cur), stroke=1, fill=0)
 
     # ---- 合計 ----
-    # 優先: フォーム側で送られた total, 空なら items の合計
-    try:
-        total = int(data.get("total", 0) or 0)
-    except (TypeError, ValueError):
-        total = 0
+    # 優先: フォーム側で送られた total, 空なら items の合計 (別途等の文字列は除外)
+    total = _amount_to_int(data.get("total", 0))
     if total <= 0:
         total = computed_total
 
@@ -804,6 +852,7 @@ INDEX_HTML = r"""<!doctype html>
     <div class="subhead">
       <div class="section-label">OTHER COSTS</div>
       <h3>その他 初期費用項目</h3>
+      <div class="hint" style="padding-top:0">金額欄には数字のほか「別途」「応相談」等の文字列も入力可能です。文字列は合計金額の計算から除外されます。</div>
     </div>
 
     <table class="items">
@@ -978,8 +1027,12 @@ function saveCurrentForm(){
   p.other_items    = [];
   document.querySelectorAll("#tbody tr").forEach(tr => {
     const n = tr.querySelector(".name").value.trim();
-    const a = Number(tr.querySelector(".amount").value) || 0;
-    if(n) p.other_items.push({name:n, amount:a});
+    const av = tr.querySelector(".amount").value;
+    if(n){
+      const pa = parseAmount(av);
+      // 数値なら number、『別途』等なら string で保存
+      p.other_items.push({name:n, amount: pa.text !== null ? pa.text : pa.num});
+    }
   });
 }
 
@@ -1048,11 +1101,33 @@ document.addEventListener("input", ev => {
     }
   }
 });
+/* amount 表示: 数値なら そのまま数字、文字列(別途等)なら文字列そのまま */
+function amountToInput(v){
+  if(v === null || v === undefined || v === "") return "";
+  if(typeof v === "number") return String(v);
+  const s = String(v).trim();
+  // 数値化できればそれを、できなければ文字列のまま
+  const cleaned = s.replace(/[,¥￥円\s]/g, "");
+  if(cleaned !== "" && !isNaN(Number(cleaned))) return cleaned;
+  return s;
+}
+/* 入力値を解析 → {num: 数値(計算用), text: 文字列ならそれ|null} */
+function parseAmount(s){
+  const v = String(s||"").trim();
+  if(!v) return {num:0, text:null, raw:0};
+  const cleaned = v.replace(/[,¥￥円\s]/g, "");
+  if(cleaned !== "" && !isNaN(Number(cleaned))){
+    const n = Number(cleaned);
+    return {num:n, text:null, raw:n};
+  }
+  return {num:0, text:v, raw:v};  // 『別途』等
+}
+
 function addRow(name="", amount=0){
   const tr = document.createElement("tr");
   tr.innerHTML = `
     <td><input class="name" type="text" value="${escapeHtml(name)}"></td>
-    <td><input class="amount" type="number" step="1" value="${Number(amount)||0}"></td>
+    <td><input class="amount" type="text" inputmode="numeric" value="${escapeHtml(amountToInput(amount))}" placeholder="金額 または 別途"></td>
     <td class="del"><button type="button" class="del-btn" title="削除">✕</button></td>
   `;
   tr.querySelector(".amount").addEventListener("input", recalcTotal);
@@ -1115,7 +1190,7 @@ function recalcTotal(){
   const b = calcBreakdown();
   if(b) b.rows.forEach(r => sum += (r.amount || 0));
   document.querySelectorAll("#tbody input.amount").forEach(i => {
-    sum += Number(i.value) || 0;
+    sum += parseAmount(i.value).num;  // 『別途』等は 0 扱い
   });
   $("#total-display").textContent = "¥" + sum.toLocaleString();
 }
@@ -1160,9 +1235,12 @@ function buildPayloadFromProperty(p){
       items.push({name:`管理費（${nm+1}月分）`, amount:m});
     }
   }
-  // その他項目
-  (p.other_items||[]).forEach(it => items.push({name:it.name, amount:Number(it.amount)||0}));
-  const total = items.reduce((s,i) => s + (i.amount||0), 0);
+  // その他項目 (amount は number or string『別途』など)
+  (p.other_items||[]).forEach(it => items.push({name:it.name, amount:it.amount}));
+  const total = items.reduce((s,i) => {
+    const n = (typeof i.amount === "number") ? i.amount : parseAmount(i.amount).num;
+    return s + n;
+  }, 0);
   return {
     property_name: p.property_name,
     address: p.address,
