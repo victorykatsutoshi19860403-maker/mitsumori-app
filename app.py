@@ -283,7 +283,7 @@ def generate_estimate_pdf(data: dict) -> bytes:
 
     # タイトル
     c.setFillColor(COLOR_GOLD)
-    c.setFont(FONT_MINCHO, 22)
+    c.setFont(FONT_GOTHIC, 22)
     c.drawString(20 * mm, H - 12 * mm, "御  見  積  書")
 
     # 右: ブランド表記
@@ -304,7 +304,7 @@ def generate_estimate_pdf(data: dict) -> bytes:
 
     # ---- 会社情報 (右) ----
     cy = H - 50 * mm
-    c.setFont(FONT_MINCHO, 13)
+    c.setFont(FONT_GOTHIC, 13)
     c.setFillColor(COLOR_NAVY)
     c.drawRightString(W - 20 * mm, cy, COMPANY_NAME)
 
@@ -321,7 +321,7 @@ def generate_estimate_pdf(data: dict) -> bytes:
 
     # ---- 挨拶文 ----
     gy = H - 80 * mm
-    c.setFont(FONT_MINCHO, 10.5)
+    c.setFont(FONT_GOTHIC, 10.5)
     c.setFillColor(COLOR_GRAY_DARK)
     c.drawString(20 * mm, gy, "下記の通りお見積り申し上げます。ご査収のほど宜しくお願い申し上げます。")
 
@@ -351,7 +351,7 @@ def generate_estimate_pdf(data: dict) -> bytes:
     c.setFont(FONT_GOTHIC, 9)
     c.setFillColor(COLOR_NAVY)
     c.drawString(26 * mm, py - 6 * mm, "PROPERTY")
-    c.setFont(FONT_MINCHO, 11)
+    c.setFont(FONT_GOTHIC, 11)
     c.setFillColor(COLOR_GRAY_DARK)
     c.drawString(26 * mm, py - 12 * mm, f"物件名  {data.get('property_name', '') or '—'}")
     c.drawString(26 * mm, py - 17.5 * mm, f"所在地  {data.get('address', '') or '—'}")
@@ -408,7 +408,7 @@ def generate_estimate_pdf(data: dict) -> bytes:
         c.line(20 * mm, y_cur, W - 20 * mm, y_cur)
 
         c.setFillColor(COLOR_GRAY_DARK)
-        c.setFont(FONT_MINCHO, 10.5)
+        c.setFont(FONT_GOTHIC, 10.5)
         c.drawString(26 * mm, y_cur + 2.5 * mm, name)
         c.setFont(FONT_GOTHIC, 10.5)
         # 数値なら ¥X,XXX、『別途』等の文字列ならそのまま印字
@@ -474,7 +474,7 @@ def generate_estimate_pdf(data: dict) -> bytes:
                stroke=0, fill=1)
 
         # テキスト (自動改行)
-        text_font = FONT_MINCHO
+        text_font = FONT_GOTHIC
         text_size = 10.0
         line_h    = 4.8 * mm
         max_w     = W - 52 * mm
@@ -496,11 +496,11 @@ def generate_estimate_pdf(data: dict) -> bytes:
     c.setFillColor(COLOR_GOLD)
     c.rect(20 * mm, fy + 3 * mm, W - 40 * mm, 0.3 * mm, stroke=0, fill=1)
     c.setFillColor(COLOR_GRAY_DARK)
-    c.setFont(FONT_MINCHO, 8)
+    c.setFont(FONT_GOTHIC, 8)
     c.drawString(20 * mm, fy - 2 * mm,
                  "※ 本見積は発行日より30日間有効です。金額・条件は予告なく変更となる場合がございます。")
-    # 社名はすべて FONT_MINCHO で統一 (右上ヘッダと同じ書体)
-    c.setFont(FONT_MINCHO, 9)
+    # 全体をゴシック体 (HeiseiKakuGo-W5) で統一
+    c.setFont(FONT_GOTHIC, 9)
     c.setFillColor(COLOR_NAVY)
     c.drawRightString(W - 20 * mm, fy - 2 * mm, COMPANY_NAME)
 
@@ -556,7 +556,7 @@ INDEX_HTML = r"""<!doctype html>
     color:var(--gold);
   }
   .brand small{
-    font-family:"Noto Serif JP",serif;
+    font-family:"Noto Sans JP",sans-serif;
     font-size:10px;color:#c9c4b8;letter-spacing:.2em;margin-left:10px;
     font-weight:400;
   }
@@ -565,7 +565,7 @@ INDEX_HTML = r"""<!doctype html>
   main{max-width:980px;margin:48px auto;padding:0 24px}
 
   h1.title{
-    font-family:"Noto Serif JP",serif;
+    font-family:"Noto Sans JP",sans-serif;
     font-weight:700;
     font-size:30px;
     letter-spacing:.08em;
@@ -602,7 +602,7 @@ INDEX_HTML = r"""<!doctype html>
     margin-bottom:6px;
   }
   .section-title{
-    font-family:"Noto Serif JP",serif;
+    font-family:"Noto Sans JP",sans-serif;
     font-weight:600;font-size:18px;color:var(--navy);
     margin:0 0 18px;
   }
@@ -621,7 +621,7 @@ INDEX_HTML = r"""<!doctype html>
   .drop.on{border-color:var(--gold);background:#fbf5e8}
   .drop p{margin:6px 0;color:#666}
   .drop .big{
-    font-family:"Noto Serif JP",serif;
+    font-family:"Noto Sans JP",sans-serif;
     font-size:15px;color:var(--navy);margin-bottom:6px;
   }
   .drop input{display:none}
@@ -636,7 +636,7 @@ INDEX_HTML = r"""<!doctype html>
     padding:13px 32px;
     background:var(--navy);color:#fff;
     border:none;cursor:pointer;
-    font-family:"Noto Serif JP",serif;
+    font-family:"Noto Sans JP",sans-serif;
     font-size:14px;letter-spacing:.15em;
     transition:.2s;
     border-radius:1px;
@@ -698,7 +698,7 @@ INDEX_HTML = r"""<!doctype html>
     border-radius:2px;
   }
   .rent-title{
-    font-family:"Noto Serif JP",serif;
+    font-family:"Noto Sans JP",sans-serif;
     font-weight:600;font-size:14px;
     color:var(--navy);letter-spacing:.1em;
     margin:4px 0 14px;
@@ -721,7 +721,7 @@ INDEX_HTML = r"""<!doctype html>
     font-size:13px;
   }
   .bd-row:last-child{border-bottom:none}
-  .bd-name{color:var(--navy);font-family:"Noto Serif JP",serif}
+  .bd-name{color:var(--navy);font-family:"Noto Sans JP",sans-serif}
   .bd-amt{font-family:"Noto Sans JP",sans-serif;color:var(--ink);font-weight:500}
   .bd-empty{color:#999;font-size:12px;padding:10px 0;text-align:center}
   .subhead{
@@ -731,7 +731,7 @@ INDEX_HTML = r"""<!doctype html>
   }
   .subhead .section-label{margin-bottom:2px}
   .subhead h3{
-    font-family:"Noto Serif JP",serif;
+    font-family:"Noto Sans JP",sans-serif;
     font-weight:600;font-size:14px;
     color:var(--navy);letter-spacing:.1em;
     margin:0 0 8px;
@@ -750,7 +750,7 @@ INDEX_HTML = r"""<!doctype html>
   .prop-tab{
     background:transparent;border:none;
     padding:8px 16px;cursor:pointer;
-    font-family:"Noto Serif JP",serif;font-size:13px;
+    font-family:"Noto Sans JP",sans-serif;font-size:13px;
     color:#555;letter-spacing:.05em;
     border-radius:1px;
     transition:.15s;
@@ -828,7 +828,7 @@ INDEX_HTML = r"""<!doctype html>
     border-top:3px solid var(--gold);
   }
   .total-box .lbl{
-    font-family:"Noto Serif JP",serif;
+    font-family:"Noto Sans JP",sans-serif;
     font-size:15px;letter-spacing:.2em;
   }
   .total-box .val{
