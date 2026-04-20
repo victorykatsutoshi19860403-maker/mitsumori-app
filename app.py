@@ -439,7 +439,8 @@ def generate_estimate_pdf(data: dict) -> bytes:
     c.setFont(FONT_GOTHIC, 12)
     c.drawString(26 * mm, total_top - total_h + 4.5 * mm, "合　計　金　額  (税込)")
     c.setFillColor(COLOR_GOLD)
-    c.setFont(FONT_MINCHO, 16)
+    # 金額はすべて FONT_GOTHIC で統一 (項目表と同じ書体)
+    c.setFont(FONT_GOTHIC, 17)
     c.drawRightString(W - 26 * mm, total_top - total_h + 4 * mm, _fmt_yen(total))
 
     # ---- 備考 ----
@@ -498,7 +499,8 @@ def generate_estimate_pdf(data: dict) -> bytes:
     c.setFont(FONT_MINCHO, 8)
     c.drawString(20 * mm, fy - 2 * mm,
                  "※ 本見積は発行日より30日間有効です。金額・条件は予告なく変更となる場合がございます。")
-    c.setFont(FONT_GOTHIC, 7.5)
+    # 社名はすべて FONT_MINCHO で統一 (右上ヘッダと同じ書体)
+    c.setFont(FONT_MINCHO, 9)
     c.setFillColor(COLOR_NAVY)
     c.drawRightString(W - 20 * mm, fy - 2 * mm, COMPANY_NAME)
 
@@ -554,8 +556,9 @@ INDEX_HTML = r"""<!doctype html>
     color:var(--gold);
   }
   .brand small{
-    font-family:"Noto Sans JP",sans-serif;
+    font-family:"Noto Serif JP",serif;
     font-size:10px;color:#c9c4b8;letter-spacing:.2em;margin-left:10px;
+    font-weight:400;
   }
   .tagline{font-size:11px;color:#c9c4b8;letter-spacing:.2em}
 
